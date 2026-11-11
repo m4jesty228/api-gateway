@@ -15,6 +15,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.containers.wait.strategy.Wait;
 
 /**
  * B9 : le rate limiting fonctionne avec un vrai Redis (Testcontainers).
@@ -40,6 +41,8 @@ class RateLimitIntegrationTests {
     @Container
     static GenericContainer redis = new GenericContainer(DockerImageName.parse("redis:7-alpine"))
             .withExposedPorts(6379)
+            // On attend le message de Redis lui-même, pas seulement l'ouverture du port (le proxy Docker Desktop l'ouvre trop tôt)
+            .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1))
             .withStartupTimeout(Duration.ofSeconds(60));
 
     @DynamicPropertySource
