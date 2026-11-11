@@ -12,3 +12,9 @@ paths = [
   '''(^|/)\.env\.example$''',   # valeurs factices documentées
   '''(^|/)target/''',            # sorties de build (jar, rapports), jamais versionnées
 ]
+[[allowlists]]
+description = "Identifiants fictifs de test (Idempotency-Key, traceId) : aucun secret reel"
+regexes = [
+  '''9f1c2b7e-3a44-4d0e-8b19-6f2a5c7d1e30''',
+  '''0b2f6a4e-1c1d-4f3e-9d57-8a3c1f2e9b10''',
+]
