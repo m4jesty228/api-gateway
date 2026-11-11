@@ -12,6 +12,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.connection.ReactiveRedisConnection;
+import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -89,11 +91,43 @@ class RateLimitIntegrationTests {
 
     private WebTestClient webTestClient;
 
+    @Autowired
+    private ReactiveRedisConnectionFactory redisFactory;
+
     @BeforeEach
-    void initClient() {
+    void initClient() throws InterruptedException {
         webTestClient = WebTestClient.bindToServer()
                 .baseUrl("http://localhost:" + port)
                 .build();
+        attendreQueLeGatewayJoigneRedis();
+    }
+
+    /**
+     * Le gateway (fail-open) laisse passer les requêtes si Redis ne répond pas : un Redis à demi joignable fausserait le
+     * comptage des 5 premières tentatives. On attend donc un PONG par la connexion Lettuce du gateway lui-même
+     * (même fabrique que le limiteur), avant d'envoyer la moindre requête de test.
+     */
+    private void attendreQueLeGatewayJoigneRedis() throws InterruptedException {
+        long limite = System.nanoTime() + Duration.ofSeconds(90).toNanos();
+        while (true) {
+            try {
+                ReactiveRedisConnection connexion = redisFactory.getReactiveConnection();
+                try {
+                    String pong = connexion.ping().block(Duration.ofSeconds(3));
+                    if ("PONG".equalsIgnoreCase(pong)) {
+                        return;
+                    }
+                } finally {
+                    connexion.close();
+                }
+            } catch (RuntimeException e) {
+                // Redis pas encore joignable par la connexion Lettuce : on réessaie
+            }
+            if (System.nanoTime() > limite) {
+                throw new IllegalStateException("Redis injoignable par le gateway après 90 s");
+            }
+            Thread.sleep(500);
+        }
     }
 
     @Test
