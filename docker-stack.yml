@@ -1,0 +1,145 @@
+# =============================================================================
+# API Gateway - stack Docker Swarm (B13)
+#
+# Prérequis (une seule fois, sur le manager) :
+#   docker swarm init
+#   docker network create --driver overlay --opt encrypted --attachable banking-network   (--opt encrypted : trafic entre nœuds chiffré IPsec)
+#   (mot de passe Redis : voir ci/README-CI.md ou la notice B13)
+# Déploiement :
+#   docker stack deploy -c docker-stack.yml gateway
+# Les variables ${...} sont lues dans le shell (docker stack deploy ne lit pas le fichier .env).
+#
+# Alignement cahier des charges (section 14) : réseau banking-network, limites CPU/mémoire,
+# secrets, sondes de santé, mise à jour progressive avec retour arrière automatique,
+# seul le gateway publie un port vers l'extérieur.
+# =============================================================================
+services:
+
+  api-gateway:
+    # Le tag est le SHA du commit (étape "Image Docker" du Jenkinsfile) ; "local" pour un test sur le poste
+    image: ${IMAGE_REPO:-neobank/api-gateway}:${IMAGE_TAG:-local}
+    environment:
+      SERVER_PORT: "8080"
+      # Adresses des services des autres membres : leur nom DNS sur banking-network
+      IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL:-http://identity-service:8081}
+      CORE_BANKING_SERVICE_URL: ${CORE_BANKING_SERVICE_URL:-http://core-banking-service:8082}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL:-http://payment-service:8083}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://notification-service:8084}
+      JWKS_URI: ${JWKS_URI:-http://identity-service:8081/.well-known/jwks.json}
+      JWT_ISSUER: ${JWT_ISSUER:-identity-service}
+      ADMIN_PATHS: ${ADMIN_PATHS:-/api/accounts/*/unblock}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # Le mot de passe Redis n'est jamais une variable d'environnement : Spring le lit dans le fichier du secret
+      # (/run/secrets/spring.data.redis.password), grâce à l'import "configtree"
+      SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
+      RATE_LIMIT_ENABLED: "true"
+      # Port publié en mode "host" (voir plus bas) : le gateway voit l'IP réelle du client, donc pas de proxy intermédiaire
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-0}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ecs
+      RESILIENCE_TIMEOUT_MS: "3000"
+      # B15 : limite par utilisateur, validation des entrées, métriques (port 9090 interne, non publié)
+      RATE_LIMIT_USER_PER_SECOND: ${RATE_LIMIT_USER_PER_SECOND:-10}
+      RATE_LIMIT_USER_BURST: ${RATE_LIMIT_USER_BURST:-20}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+      KYC_MAX_BODY_BYTES: ${KYC_MAX_BODY_BYTES:-10485760}
+      METRICS_PORT: "9090"
+    secrets:
+      # Même secret que Redis, mais monté sous le nom de la propriété Spring qu'il alimente
+      - source: redis_password
+        target: spring.data.redis.password
+    ports:
+      # Mode "host" : contourne le routage interne d'ingress de Swarm, qui remplace l'IP du client par celle du
+      # nœud et fausserait le rate limiting par IP. Contrepartie : un seul conteneur par nœud (d'où mode global)
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: host
+    networks:
+      - banking-network
+    # Conteneur en lecture seule : un attaquant qui prendrait la main ne pourrait écrire que dans /tmp (en mémoire)
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      # Sonde indépendante du schéma : GW_SCHEME vaut "http" par défaut, "https" avec docker-stack.tls.yml.
+      # (Une surcharge de "test" dans un second fichier serait AJOUTÉE à celle-ci par docker stack deploy, pas remplacée.)
+      # -k : le certificat vise un nom DNS public, pas 127.0.0.1 ; sans effet en HTTP. $$ : le $ est évalué dans le conteneur
+      test: ["CMD-SHELL", "curl -fsSk \"$${GW_SCHEME:-http}://127.0.0.1:8080/actuator/health/liveness\""]
+      interval: 15s
+      timeout: 3s
+      start_period: 40s
+      retries: 3
+    stop_grace_period: 30s          # > timeout-per-shutdown-phase (20 s) : les requêtes en cours se terminent
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"             # évite qu'un journal sature le disque du nœud
+        max-file: "3"
+    deploy:
+      mode: global                  # un gateway par nœud (voir le port en mode "host")
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      update_config:
+        parallelism: 1              # un nœud à la fois : les autres continuent de répondre
+        order: stop-first           # start-first impossible : le port hôte est occupé par l'ancienne instance
+        delay: 10s
+        failure_action: rollback    # une mise à jour qui ne devient pas "healthy" est annulée toute seule
+        monitor: 60s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+  redis:
+    image: redis:7-alpine
+    # Mot de passe lu dans le secret au démarrage ; aucune persistance (les compteurs de rate limit sont éphémères)
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$(cat /run/secrets/redis_password)\" --save '' --appendonly no"]
+    secrets:
+      - redis_password
+    # Aucun port publié : Redis n'est joignable que depuis banking-network
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis_password)\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+        reservations:
+          memory: 64M
+      restart_policy:
+        condition: any
+        delay: 5s
+
+secrets:
+  # Créé hors du fichier (docker secret create) : sa valeur n'apparaît jamais dans le dépôt Git
+  redis_password:
+    external: true
+
+networks:
+  # Réseau partagé avec les stacks des autres membres (créé une fois, voir en-tête)
+  banking-network:
+    external: true
+    name: banking-network

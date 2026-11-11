@@ -1,0 +1,48 @@
+# Alertes du gateway (cahier des charges §17). Les noms de métriques sont ceux de Micrometer/Spring :
+#   http_server_requests_seconds_*  : requêtes reçues par le gateway (labels status, uri, method)
+#   resilience4j_circuitbreaker_state : état d'un circuit (un par service), si l'export Resilience4j est présent
+groups:
+  - name: api-gateway
+    rules:
+      - alert: GatewayDown
+        expr: up{job="api-gateway"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "Une instance du gateway ne répond plus aux métriques"}
+
+      - alert: GatewayHighErrorRate
+        # plus de 5 % de réponses 5xx pendant 5 minutes
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="api-gateway",status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{job="api-gateway"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Plus de 5 % d'erreurs 5xx (un service aval est probablement en panne)"}
+
+      - alert: GatewayLatencyP95High
+        # objectif du cahier des charges : p95 < 300 ms
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job="api-gateway"}[5m]))) > 0.3
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Latence p95 du gateway supérieure à 300 ms"}
+
+      - alert: GatewayRateLimitingSpike
+        # beaucoup de 429 : attaque par force brute ou client qui boucle
+        expr: sum(rate(http_server_requests_seconds_count{job="api-gateway",status="429"}[5m])) > 5
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Pic de réponses 429 (limite de débit atteinte)"}
+
+      - alert: GatewayAuthFailuresSpike
+        # beaucoup de 401 : tokens volés/expirés ou tentatives d'accès
+        expr: sum(rate(http_server_requests_seconds_count{job="api-gateway",status="401"}[5m])) > 10
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Pic de réponses 401 (tentatives d'accès non authentifiées)"}
+
+      - alert: GatewayCircuitOpen
+        expr: resilience4j_circuitbreaker_state{state="open"} == 1
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "Circuit ouvert vers le service {{ $labels.name }} : il renvoie des 503"}

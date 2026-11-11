@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Exceptions du scan SCA (OWASP Dependency-Check). Cahier des charges, section 13 :
+  le pipeline échoue sur une CVE CRITICAL "sans exception documentée".
+
+  Règles pour ajouter une exception ici :
+    1. Une seule CVE par bloc <suppress>, avec le motif (faux positif ou risque accepté) dans <notes>.
+    2. Toujours une date d'expiration (attribut until) : l'exception est revue à cette date.
+    3. Valider l'ajout en revue de code (pull request).
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <suppress until="2027-03-31Z">
+    <notes><![CDATA[
+      Risque accepté, revue au 31/03/2027.
+      kotlin-stdlib 2.3.21 (et ses variantes jdk7, jdk8, common, même bibliothèque) arrive par transitivité (resilience4j-core 2.3.0). Le CVE-2026-53914 (CVSS 9,8 selon la base NVD,
+      6,7 selon l'éditeur) concerne la désérialisation dans le cache de build des outils Kotlin, pas la bibliothèque
+      standard à l'exécution. Le gateway n'exécute aucun outil de build Kotlin et ne désérialise rien depuis ce cache.
+      Action : mettre à jour dès qu'une version corrigée de Resilience4j (ou de kotlin-stdlib) est publiée.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(-jdk7|-jdk8|-common)?@2\.3\.21$</packageUrl>
+    <cve>CVE-2026-53914</cve>
+  </suppress>
+</suppressions>

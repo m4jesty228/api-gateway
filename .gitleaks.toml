@@ -1,0 +1,14 @@
+# Configuration Gitleaks : scan des secrets (clés API, mots de passe, tokens) dans le code et l'historique Git.
+# Cahier des charges, section 13 : tout secret détecté fait échouer le pipeline, sans exception.
+title = "Gitleaks - API Gateway"
+
+[extend]
+# Reprend toutes les règles officielles de Gitleaks
+useDefault = true
+
+[[allowlists]]
+description = "Fichiers qui ne contiennent aucun secret réel"
+paths = [
+  '''(^|/)\.env\.example$''',   # valeurs factices documentées
+  '''(^|/)target/''',            # sorties de build (jar, rapports), jamais versionnées
+]

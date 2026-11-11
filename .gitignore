@@ -1,0 +1,12 @@
+target/
+.env
+.idea/
+*.iml
+.vscode/
+*.log
+
+.sonar/
+zap-out/
+tls/
+*.tar
+*.p12

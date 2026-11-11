@@ -1,0 +1,22 @@
+# Build context minimal : on n'envoie que ce qui sert au Dockerfile
+target/
+.idea/
+.vscode/
+*.iml
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+tools/
+Captures/
+*.ps1
+*.png
+*.log
+.DS_Store
+Thumbs.db
+ci/
+Jenkinsfile
+.gitleaks.toml
+dependency-check-suppressions.xml

@@ -1,0 +1,79 @@
+# =============================================================================
+# API Gateway - stack locale (B10)
+# Usage :
+#   docker compose up -d --build
+#   docker compose logs -f api-gateway
+#   curl http://localhost:8080/actuator/health
+# Alignement cahier des charges (section 14) : reseau banking-network, limites CPU/memoire,
+# seul le gateway publie un port vers l'exterieur. Le deploiement Swarm (B13) reprendra ces regles.
+# =============================================================================
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-gw
+    ports:
+      # Liaison sur la boucle locale uniquement : utile pour lancer le gateway depuis l'IDE (mvn spring-boot:run),
+      # mais Redis n'est jamais joignable depuis le reseau. Sous Swarm, aucun port ne sera publie.
+      - "127.0.0.1:6379:6379"
+    mem_limit: 128m          # limites reproduisant les contraintes Kubernetes (cahier des charges, section 14)
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - banking-network
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: neobank/api-gateway:0.1.0-SNAPSHOT
+    container_name: api-gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"          # seul port publie vers l'exterieur (contrat, section 7)
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      SERVER_PORT: "8080"
+      # En local, les faux services (tools/MockServices.java) tournent sur l'hote
+      IDENTITY_SERVICE_URL: "http://host.docker.internal:8081"
+      CORE_BANKING_SERVICE_URL: "http://host.docker.internal:8082"
+      PAYMENT_SERVICE_URL: "http://host.docker.internal:8083"
+      NOTIFICATION_SERVICE_URL: "http://host.docker.internal:8084"
+      JWKS_URI: "http://host.docker.internal:8081/.well-known/jwks.json"
+      JWT_ISSUER: "identity-service"
+      ADMIN_PATHS: "/api/accounts/*/unblock"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      RATE_LIMIT_ENABLED: "true"
+      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      LOG_LEVEL: "INFO"
+      LOG_FORMAT: "ecs"
+      RESILIENCE_TIMEOUT_MS: "3000"
+    extra_hosts:
+      # Windows / Mac Docker Desktop : acces aux ports de l'hote
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health/liveness"]
+      interval: 15s
+      timeout: 3s
+      start_period: 40s
+      retries: 3
+    networks:
+      - banking-network
+    restart: unless-stopped
+
+networks:
+  # Meme nom que dans le contrat d'interface (section 7) : les services des autres membres
+  # pourront rejoindre ce reseau lors de l'integration
+  banking-network:
+    name: banking-network
+    driver: bridge

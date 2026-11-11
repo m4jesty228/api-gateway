@@ -1,0 +1,97 @@
+# Configuration du gateway. Chaque valeur peut être remplacée par une variable d'environnement
+# (syntaxe ${VARIABLE:valeur_par_défaut}) : les valeurs par défaut servent au développement local.
+
+server:
+  port: ${SERVER_PORT:8080}                 # seul port publié vers l'extérieur (contrat §7)
+  # TLS (B15, cahier des charges §10) : désactivé par défaut (le MVP tourne derrière un Ingress/LB qui termine TLS).
+  # Activer avec SSL_ENABLED=true + un keystore PKCS12 ; le mot de passe vient d'un secret Docker (configtree)
+  ssl:
+    enabled: ${SSL_ENABLED:false}
+    key-store: ${SSL_KEYSTORE:}
+    key-store-type: PKCS12
+    enabled-protocols: TLSv1.3,TLSv1.2     # SSLv3, TLS 1.0 et 1.1 refusés
+  shutdown: graceful                        # termine les requêtes en cours avant l'arrêt (rolling update Swarm)
+
+spring:
+  application:
+    name: api-gateway
+  main:
+    banner-mode: off                        # la bannière ASCII n'est pas du JSON : elle casserait l'analyse des logs
+  lifecycle:
+    timeout-per-shutdown-phase: 20s         # délai maximal accordé aux requêtes en cours à l'arrêt
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Timeouts très courts : un Redis local répond en ~1 ms ; s'il est en panne, chaque requête (fail-open)
+      # ne doit perdre que ce délai. 500 ms ajoutait 0,5 s à chaque appel, contre un objectif p95 < 300 ms
+      timeout: 150ms
+      connect-timeout: 150ms
+
+# Adresses des services aval (utilisées par les routes à partir de B2)
+gateway:
+  services:
+    identity: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+    banking: ${CORE_BANKING_SERVICE_URL:http://localhost:8082}
+    payment: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+    notification: ${NOTIFICATION_SERVICE_URL:http://localhost:8084}
+  security:
+    issuer: ${JWT_ISSUER:identity-service}   # valeur attendue dans le claim "iss" (contrat §4)
+    # Clé publique d'Identity au format JWKS ; par défaut déduite de l'adresse d'Identity
+    jwks-uri: ${JWKS_URI:${IDENTITY_SERVICE_URL:http://localhost:8081}/.well-known/jwks.json}
+    # Routes réservées aux ADMIN, séparées par des virgules (contrat §3). Provisoire : déblocage de compte
+    admin-paths: ${ADMIN_PATHS:/api/accounts/*/unblock}
+  # Rate limiting par IP (B5). Compteurs dans Redis ; si Redis tombe, le gateway laisse passer (fail-open).
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    # Nombre de proxys de confiance devant le gateway. 0 = on ignore X-Forwarded-For (non falsifiable)
+    trusted-proxies: ${RATE_LIMIT_TRUSTED_PROXIES:0}
+    auth-per-minute: ${RATE_LIMIT_AUTH_PER_MINUTE:10}   # login / refresh / register : par IP et par route
+    ip-per-second: ${RATE_LIMIT_IP_PER_SECOND:20}       # toutes les autres routes : débit moyen par IP
+    ip-burst: ${RATE_LIMIT_IP_BURST:40}                 # ... et pointe autorisée
+    user-per-second: ${RATE_LIMIT_USER_PER_SECOND:10}   # par utilisateur authentifié (claim "sub"), en plus de l'IP
+    user-burst: ${RATE_LIMIT_USER_BURST:20}
+  # Validation des entrées (B15) : taille du corps, type de contenu, format de Idempotency-Key
+  validation:
+    enabled: ${VALIDATION_ENABLED:true}
+    max-body-bytes: ${MAX_BODY_BYTES:1048576}           # 1 Mio pour le JSON
+    kyc-max-body-bytes: ${KYC_MAX_BODY_BYTES:10485760}  # 10 Mio pour les pièces justificatives (/api/kyc/**)
+  # Métriques Prometheus sur un port interne, non publié (0 = désactivé)
+  metrics:
+    port: ${METRICS_PORT:9090}
+  # Origines autorisées pour le frontend React (jamais "*" : les cookies/identifiants sont autorisés)
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+
+  # Résilience (B7) : un circuit breaker par service aval, avec un délai maximal par appel (contrat §7 : 2 à 3 s)
+  resilience:
+    timeout-ms: ${RESILIENCE_TIMEOUT_MS:3000}            # au-delà, le service est considéré indisponible (503)
+    window-size: ${RESILIENCE_WINDOW_SIZE:10}            # le circuit juge les N derniers appels
+    minimum-calls: ${RESILIENCE_MINIMUM_CALLS:5}         # pas de décision avant ce nombre d'appels
+    failure-rate-percent: ${RESILIENCE_FAILURE_RATE:50}  # % d'échecs qui ouvre le circuit
+    open-seconds: ${RESILIENCE_OPEN_SECONDS:10}          # durée pendant laquelle le circuit reste ouvert (503 immédiat)
+    half-open-calls: ${RESILIENCE_HALF_OPEN_CALLS:3}     # appels d'essai avant de refermer le circuit
+
+# Connexion TCP vers les services aval : un hôte injoignable est détecté en 1 s au lieu d'attendre le délai complet
+spring.cloud.gateway.server.webflux.httpclient.connect-timeout: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health                     # on n'expose que la santé ; rien d'autre sur le réseau
+  health:
+    redis:
+      enabled: false                        # Redis en panne ne doit pas rendre le gateway "DOWN" (fail-open)
+  endpoint:
+    health:
+      probes:
+        enabled: true                       # active /actuator/health/liveness et /readiness
+      show-details: never                   # aucun détail interne renvoyé aux clients
+
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}            # une ligne JSON par log (ecs ou logstash), lisible par ELK/OpenSearch
+  level:
+    root: ${LOG_LEVEL:INFO}

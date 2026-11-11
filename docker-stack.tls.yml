@@ -1,0 +1,26 @@
+# Surcharge TLS : le gateway sert HTTPS lui-même (cahier des charges §10, "TLS partout").
+# Usage :  docker stack deploy -c docker-stack.yml -c docker-stack.tls.yml gateway
+# Prérequis : un keystore PKCS12 et son mot de passe, donnés à Swarm comme secrets (jamais dans l'image ni en variable) :
+#   sh tools/make-dev-cert.sh <nom-dns>                       (certificat auto-signé de test ; en production : certificat reconnu)
+#   docker secret create tls_keystore tls/gateway.p12
+#   docker secret create tls_keystore_password tls/keystore-password.txt
+# Si TLS est terminé devant le gateway (Ingress, load balancer), ne PAS utiliser ce fichier.
+services:
+  api-gateway:
+    environment:
+      SSL_ENABLED: "true"
+      SSL_KEYSTORE: "file:/run/secrets/tls_keystore"
+      GW_SCHEME: "https"          # la sonde de santé du fichier de base passe alors en HTTPS
+    secrets:
+      - source: redis_password
+        target: spring.data.redis.password
+      - source: tls_keystore
+        target: tls_keystore
+      # Le nom du fichier = la propriété Spring qu'il alimente (import configtree)
+      - source: tls_keystore_password
+        target: server.ssl.key-store-password
+secrets:
+  tls_keystore:
+    external: true
+  tls_keystore_password:
+    external: true
