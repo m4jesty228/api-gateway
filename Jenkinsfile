@@ -74,8 +74,8 @@ pipeline {
             }
             post {
                 always {
-                    junit testResults: "${params.SERVICE_DIR}/target/surefire-reports/*.xml", allowEmptyResults: true
-                    archiveArtifacts artifacts: "${params.SERVICE_DIR}/target/site/jacoco/**", allowEmptyArchive: true
+                    junit testResults: "${params.SERVICE_DIR == '.' ? '' : params.SERVICE_DIR + '/'}target/surefire-reports/*.xml", allowEmptyResults: true
+                    archiveArtifacts artifacts: "${params.SERVICE_DIR == '.' ? '' : params.SERVICE_DIR + '/'}target/site/jacoco/**", allowEmptyArchive: true
                 }
             }
         }
@@ -115,7 +115,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts artifacts: "${params.SERVICE_DIR}/target/dependency-check-report.*", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "${params.SERVICE_DIR == '.' ? '' : params.SERVICE_DIR + '/'}target/dependency-check-report.*", allowEmptyArchive: true
                 }
             }
         }
@@ -129,7 +129,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts artifacts: "${params.SERVICE_DIR}/target/bom.*", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "${params.SERVICE_DIR == '.' ? '' : params.SERVICE_DIR + '/'}target/bom.*", allowEmptyArchive: true
                 }
             }
         }
