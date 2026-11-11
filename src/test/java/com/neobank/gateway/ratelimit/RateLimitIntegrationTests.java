@@ -2,7 +2,11 @@ package com.neobank.gateway.ratelimit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -12,10 +16,10 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.containers.wait.strategy.Wait;
 
 /**
  * B9 : le rate limiting fonctionne avec un vrai Redis (Testcontainers).
@@ -41,9 +45,38 @@ class RateLimitIntegrationTests {
     @Container
     static GenericContainer redis = new GenericContainer(DockerImageName.parse("redis:7-alpine"))
             .withExposedPorts(6379)
-            // On attend le message de Redis lui-même, pas seulement l'ouverture du port (le proxy Docker Desktop l'ouvre trop tôt)
+            // On attend le message de Redis lui-même, pas seulement l'ouverture du port
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1))
             .withStartupTimeout(Duration.ofSeconds(60));
+
+    /**
+     * Attend que Redis réponde PONG depuis la JVM de test, par le port mappé. Sous Docker Desktop (et dans Jenkins, qui
+     * passe par host.docker.internal), le port peut être ouvert et le message "Ready to accept connections" déjà écrit
+     * alors que la redirection de port ferme encore les connexions : sans cette attente, le gateway (fail-open) laisse
+     * passer les premières requêtes et le test reçoit un 503 au lieu du 429.
+     */
+    @BeforeAll
+    static void redisJoignableDepuisLaJvm() throws Exception {
+        long limite = System.nanoTime() + Duration.ofSeconds(90).toNanos();
+        while (true) {
+            try (Socket socket = new Socket(redis.getHost(), redis.getMappedPort(6379))) {
+                socket.setSoTimeout(2000);
+                socket.getOutputStream().write("PING\r\n".getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().flush();
+                byte[] reponse = new byte[16];
+                int lus = socket.getInputStream().read(reponse);
+                if (lus > 0 && new String(reponse, 0, lus, StandardCharsets.US_ASCII).startsWith("+PONG")) {
+                    return;
+                }
+            } catch (IOException e) {
+                // Redis pas encore joignable par ce chemin : on réessaie
+            }
+            if (System.nanoTime() > limite) {
+                throw new IllegalStateException("Redis injoignable depuis la JVM de test après 90 s");
+            }
+            Thread.sleep(500);
+        }
+    }
 
     @DynamicPropertySource
     static void redisProperties(DynamicPropertyRegistry registry) {
